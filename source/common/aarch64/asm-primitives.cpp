@@ -386,6 +386,7 @@ extern "C" {
 #include "sao-prim.h"
 #include "filter-neon-dotprod.h"
 #include "filter-neon-i8mm.h"
+#include "filter-prim-sve.h"
 
 namespace X265_NS
 {
@@ -1058,6 +1059,7 @@ void setupIntrinsicPrimitives(EncoderPrimitives &p, int cpuMask)
     {
         setupSaoPrimitives_sve(p);
         setupDCTPrimitives_sve(p);
+        setupFilterPrimitives_sve(p);
     }
 #endif
 #if defined(HAVE_SVE2) && HAVE_SVE_BRIDGE
