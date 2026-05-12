@@ -108,12 +108,13 @@ const cpu_name_t cpu_names[] =
     { "FastNeonMRC",     X265_CPU_FAST_NEON_MRC },
 
 #elif X265_ARCH_ARM64
+#define ARM64_SVE_DEPENDENCIES (X265_CPU_NEON | X265_CPU_NEON_DOTPROD | X265_CPU_NEON_I8MM)
     { "NEON",            X265_CPU_NEON },
 #if defined(HAVE_SVE)
-    { "SVE",            X265_CPU_SVE },
+    { "SVE",             ARM64_SVE_DEPENDENCIES | X265_CPU_SVE },
 #endif
 #if defined(HAVE_SVE2)
-    { "SVE2",            X265_CPU_SVE2 },
+    { "SVE2",            ARM64_SVE_DEPENDENCIES | X265_CPU_SVE | X265_CPU_SVE2 },
 #endif
 #if defined(HAVE_NEON_DOTPROD)
     { "Neon_DotProd",    X265_CPU_NEON_DOTPROD },
@@ -121,6 +122,7 @@ const cpu_name_t cpu_names[] =
 #if defined(HAVE_NEON_I8MM)
     { "Neon_I8MM",       X265_CPU_NEON_I8MM },
 #endif
+#undef ARM64_SVE_DEPENDENCIES
 #elif X265_ARCH_POWER8
     { "Altivec",         X265_CPU_ALTIVEC },
 
