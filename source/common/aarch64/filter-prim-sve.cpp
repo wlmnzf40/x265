@@ -314,31 +314,46 @@ static void interp_hv_pp_sve(const pixel *src, intptr_t srcStride,
 void setupFilterPrimitives_sve(EncoderPrimitives &p)
 {
 #if defined(HAVE_NEON_I8MM) || defined(HAVE_NEON_DOTPROD)
-#define LUMA_SVE(W, H) \
-    p.pu[LUMA_ ## W ## x ## H].luma_vsp  = interp_vert_sp_sve<W, H>; \
+#define LUMA_SVE_VSP(W, H) \
+    p.pu[LUMA_ ## W ## x ## H].luma_vsp = interp_vert_sp_sve<W, H>
+
+#define LUMA_SVE_HV(W, H) \
     p.pu[LUMA_ ## W ## x ## H].luma_hvpp = interp_hv_pp_sve<W, H>
 
-    LUMA_SVE(32, 32);
-    LUMA_SVE(64, 64);
+    /*
+     * Do not blindly overwrite every NEON/i8mm interpolation primitive here.
+     * This SVE implementation widens int16 samples to int32 lanes, so it only
+     * consumes svcntw() pixels per column step and carries predicate overhead.
+     * On current VL=256 cores the tuned NEON vertical-SP code is still faster
+     * for most block sizes; keep SVE vsp only where it has measured wins.
+     */
+    LUMA_SVE_VSP(16,  4);
+    LUMA_SVE_VSP(16,  8);
+    LUMA_SVE_VSP(16, 12);
 
-    LUMA_SVE(32,  8);
-    LUMA_SVE(32, 16);
-    LUMA_SVE(32, 24);
-    LUMA_SVE(32, 64);
-    LUMA_SVE(64, 16);
-    LUMA_SVE(64, 32);
-    LUMA_SVE(64, 48);
+    /*
+     * HV combines the existing i8mm/dotprod horizontal pass with the SVE
+     * vertical pass.  It helps many small/medium blocks, but the large 64x64,
+     * 64x48 and 48x64 cases regress versus the NEON vertical pass, so leave
+     * those registered to the existing NEON/i8mm implementations.
+     */
+    LUMA_SVE_HV(16,  4);
+    LUMA_SVE_HV(16,  8);
+    LUMA_SVE_HV(16, 12);
+    LUMA_SVE_HV(16, 16);
+    LUMA_SVE_HV(16, 32);
+    LUMA_SVE_HV(16, 64);
+    LUMA_SVE_HV(24, 32);
+    LUMA_SVE_HV(32,  8);
+    LUMA_SVE_HV(32, 16);
+    LUMA_SVE_HV(32, 24);
+    LUMA_SVE_HV(32, 32);
+    LUMA_SVE_HV(32, 64);
+    LUMA_SVE_HV(64, 16);
+    LUMA_SVE_HV(64, 32);
 
-    LUMA_SVE(16,  4);
-    LUMA_SVE(16,  8);
-    LUMA_SVE(16, 12);
-    LUMA_SVE(16, 16);
-    LUMA_SVE(16, 32);
-    LUMA_SVE(16, 64);
-    LUMA_SVE(24, 32);
-    LUMA_SVE(48, 64);
-
-#undef LUMA_SVE
+#undef LUMA_SVE_HV
+#undef LUMA_SVE_VSP
 #endif /* HAVE_NEON_I8MM || HAVE_NEON_DOTPROD */
 }
 

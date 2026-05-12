@@ -128,17 +128,24 @@ interp_hv_pp_sve<W,H>:
 
 ## 覆盖的块大小
 
-同时注册 `luma_vsp`（纯垂直）和 `luma_hvpp`（HV 组合）：
+注册策略不是“所有 SVE 实现无条件覆盖 NEON”。实测显示，这份 SVE 垂直滤波器使用 `svld1sh_s32` 扩展到 32-bit lane 后，列循环步长是 `svcntw()`；在常见 VL=256 的机器上每次仍只处理 8 个像素，同时还要承担谓词和 SVE intrinsic 生成代码的开销。因此：
+
+- `luma_vsp`（纯垂直）只覆盖实测优于 NEON 的小块：
+
+```
+16×4   16×8   16×12
+```
+
+- `luma_hvpp`（HV 组合）保留较多收益块，但不覆盖大块中已经更快的 NEON/i8mm 路径：
 
 ```
 16×4   16×8   16×12  16×16  16×32  16×64
 24×32
 32×8   32×16  32×24  32×32  32×64
-48×64
-64×16  64×32  64×48  64×64
+64×16  64×32
 ```
 
-大块（32×32、64×64）收益最大，因为每次列循环迭代处理更多行，摊薄了循环开销。
+`64×64`、`64×48` 和 `48×64` 的 HV 组合继续使用现有 NEON/i8mm 实现。
 
 ---
 
@@ -150,4 +157,4 @@ if(CPU_HAS_SVE AND HAVE_SVE_BRIDGE)
     # filter-prim-sve.cpp 以 -march=armv8.2-a+dotprod+i8mm+sve 编译
 ```
 
-运行时通过 `cpuMask & X265_CPU_SVE` 检测后激活，不影响非 SVE 平台。
+运行时通过 `cpuMask & X265_CPU_SVE` 检测后激活，不影响非 SVE 平台。手动跑 testbench 时，`--cpu SVE` 现在也会带上 SVE 路径依赖的 `NEON`、`Neon_DotProd` 和 `Neon_I8MM` 标志，避免只注册 SVE-only 子集而和 `--cpu NEON` 做不完整对比。
