@@ -26,25 +26,21 @@
  *
  * Design rationale
  * ----------------
- * The horizontal pass is already well-optimised by the i8mm code path (using
- * matrix-multiply accumulate).  The bottleneck in the combined HV filter is
- * the vertical (SP - short-to-pixel) pass, which works on 14-bit int16_t
- * intermediate values.
+ * The horizontal pass is already well-optimised by the i8mm code path.
+ * The bottleneck is the vertical (SP) pass on int16_t intermediate values.
  *
- * NEON limitation: each vmlal_n_s16 / vaddl_s16 instruction processes only
- * 4 int32 lanes.  To handle an 8-column group the code must maintain separate
- * "lo" and "hi" int32x4 accumulators and split every int16x8 load with
- * vget_low/vget_high.  This doubles the multiply-accumulate instruction count.
+ * At VL=256 (svcntw()=8), svld1sh_s32 loads 8 int16→int32 in one instruction,
+ * eliminating NEON's lo/hi split.  The inner loop is unrolled to 8 output rows
+ * per iteration (vs NEON's 4) to expose 8 independent accumulator chains to the
+ * CPU's out-of-order engine, better hiding the 7-instruction MLA dependency
+ * chain (~28-cycle critical path per output row).
  *
- * SVE solution: svld1sh_s32 loads int16 values from memory and sign-extends
- * them directly to int32 inside the vector register.  At VL=128 this is
- * identical to NEON; at VL=256 (AWS Graviton3 / Neoverse V1) it loads 8 int32
- * per instruction; at VL=512 it loads 16.  Combined with svmla_s32_x (no
- * separate lo/hi split needed) the inner loop uses roughly half the
- * multiply-accumulate instructions that NEON requires for the same output
- * count.  The final saturation and pack to uint8 is done with svmax, svmin
- * and svst1b_s32 (store lowest byte of each active int32 lane) - all SVE1
- * operations, no SVE2 required.
+ * Register usage (8-row block, VL=256): window w0..w14 = 15 Z-regs,
+ * accumulators acc0..acc7 = 8 Z-regs, hoisted constants = 7 Z-regs → 30 total,
+ * within the 32 Z-register architectural limit.
+ *
+ * The VL check in asm-primitives.cpp ensures this code is only registered when
+ * svcntw() > 4 (VL > 128-bit), where the wider registers justify the overhead.
  */
 
 #if defined(HAVE_SVE) && HAVE_SVE_BRIDGE
@@ -80,14 +76,7 @@ namespace {
 
 /*
  * Non-template SVE filter helpers — one per coeffIdx.
- *
- * Using non-template functions avoids the GCC two-phase name-lookup
- * restriction: SVE intrinsic names must be visible at template-definition
- * time when they appear in a dependent context.  By moving every SVE call
- * out of the template the issue disappears.
- *
- * Parameters r0..r7: sign-extended int32 vectors for the 8 filter taps.
- * offset: rounding bias = (1 << (shift-1)) + IF_INTERNAL_OFFS * 64.
+ * Non-template avoids GCC two-phase name-lookup restriction for SVE intrinsics.
  */
 
 /* coeffIdx == 1: { -1, 4, -10, 58, 17, -5, 1, 0 } */
@@ -96,7 +85,6 @@ static inline svint32_t compute_coeff1(svbool_t pg,
     svint32_t r4, svint32_t r5, svint32_t r6, svint32_t /*r7*/,
     int32_t offset)
 {
-    /* acc = offset + (r6 - r0) + 4*r1 - 10*r2 + 58*r3 + 17*r4 - 5*r5 */
     svint32_t diff = svsub_s32_x(pg, r6, r0);
     svint32_t acc  = svadd_s32_x(pg, diff, svdup_n_s32(offset));
     acc = svmla_s32_x(pg, acc, r1, svdup_n_s32( 4));
@@ -131,7 +119,6 @@ static inline svint32_t compute_coeff3(svbool_t pg,
     svint32_t r4, svint32_t r5, svint32_t r6, svint32_t r7,
     int32_t offset)
 {
-    /* acc = offset + (r1 - r7) + 4*r6 - 10*r5 + 58*r4 + 17*r3 - 5*r2 */
     svint32_t diff = svsub_s32_x(pg, r1, r7);
     svint32_t acc  = svadd_s32_x(pg, diff, svdup_n_s32(offset));
     acc = svmla_s32_x(pg, acc, r6, svdup_n_s32( 4));
@@ -142,7 +129,7 @@ static inline svint32_t compute_coeff3(svbool_t pg,
     return acc;
 }
 
-/* Arithmetic right-shift then unsigned saturate to [0, 255]. */
+/* Arithmetic right-shift then saturate to [0, 255]. */
 static inline svint32_t saturate_sve(svbool_t pg, svint32_t acc, int shift)
 {
     svuint32_t sh = svdup_n_u32((uint32_t)shift);
@@ -152,19 +139,31 @@ static inline svint32_t saturate_sve(svbool_t pg, svint32_t acc, int shift)
     return acc;
 }
 
+/* Store and advance dst pointer by dstStride. */
+static inline void store_row(svbool_t pg, uint8_t *&d, intptr_t dstStride,
+                              svint32_t acc, int shift)
+{
+    svst1b_s32(pg, reinterpret_cast<int8_t *>(d),
+               saturate_sve(pg, acc, shift));
+    d += dstStride;
+}
+
 /*
- * SVE vertical luma filter: int16 input (intermediate) -> uint8 output.
+ * Macro to call the right compute helper at compile time.
+ * Avoids a runtime switch inside the hot loop.
+ */
+#define COMPUTE(ci, pg, r0,r1,r2,r3,r4,r5,r6,r7, off) \
+    ((ci) == 1 ? compute_coeff1(pg,r0,r1,r2,r3,r4,r5,r6,r7,off) : \
+     (ci) == 2 ? compute_coeff2(pg,r0,r1,r2,r3,r4,r5,r6,r7,off) : \
+                 compute_coeff3(pg,r0,r1,r2,r3,r4,r5,r6,r7,off))
+
+/*
+ * SVE vertical luma filter: int16 input -> uint8 output.
  *
- * Column loop advances by svcntw() per iteration so the same binary handles
- * VL=128 (4 int32/iter), VL=256 (8/iter), VL=512 (16/iter).
- *
- * svld1sh_s32 reads 16-bit values and sign-extends to 32-bit, eliminating the
- * NEON lo/hi split.  svst1b_s32 packs the lowest byte of every active int32
- * lane into consecutive memory bytes.
- *
- * SVE types (svint32_t) have unknown size, so pointer arithmetic on them is
- * illegal.  The sliding window uses 11 named scalar variables (w0..w10) and
- * explicit assignment to rotate them.
+ * Inner loop unrolled to 8 rows per iteration to expose 8 independent
+ * accumulator chains to the CPU's out-of-order engine, hiding the MLA
+ * dependency-chain latency (~28 cycles per row).  A 4-row tail handles
+ * heights that are not multiples of 8 (e.g. 16×4, 16×12).
  */
 template<int coeffIdx, int width, int height>
 static void interp8_vert_sp_sve(const int16_t *src, intptr_t srcStride,
@@ -175,7 +174,6 @@ static void interp8_vert_sp_sve(const int16_t *src, intptr_t srcStride,
     const int32_t offset = (int32_t)((1u << (shift - 1))
                            + ((uint32_t)IF_INTERNAL_OFFS << IF_FILTER_PREC));
 
-    /* Point src at first tap row (3 rows before first output row). */
     src -= (8 / 2 - 1) * srcStride;
 
     for (int col = 0; col < width; col += (int)svcntw())
@@ -183,9 +181,9 @@ static void interp8_vert_sp_sve(const int16_t *src, intptr_t srcStride,
         svbool_t pg = svwhilelt_b32(col, width);
 
         const int16_t *s = src;
-        uint8_t       *d = dst;
+        uint8_t       *d = dst + col;
 
-        /* Load sliding-window preamble: rows 0..6 (7 rows). */
+        /* Preamble: load 7 rows into the sliding window. */
         svint32_t w0 = svld1sh_s32(pg, s + col); s += srcStride;
         svint32_t w1 = svld1sh_s32(pg, s + col); s += srcStride;
         svint32_t w2 = svld1sh_s32(pg, s + col); s += srcStride;
@@ -194,58 +192,76 @@ static void interp8_vert_sp_sve(const int16_t *src, intptr_t srcStride,
         svint32_t w5 = svld1sh_s32(pg, s + col); s += srcStride;
         svint32_t w6 = svld1sh_s32(pg, s + col); s += srcStride;
 
-        for (int row = 0; row < height; row += 4)
+        /*
+         * 8-row primary loop.
+         * Loads 8 new rows (w7..w14), computes 8 independent output rows,
+         * then rotates the window by 8.
+         */
+        int row = 0;
+        for (; row + 7 < height; row += 8)
         {
-            /* Append 4 new rows to the sliding window. */
+            svint32_t w7  = svld1sh_s32(pg, s + col);
+            svint32_t w8  = svld1sh_s32(pg, s + 1 * srcStride + col);
+            svint32_t w9  = svld1sh_s32(pg, s + 2 * srcStride + col);
+            svint32_t w10 = svld1sh_s32(pg, s + 3 * srcStride + col);
+            svint32_t w11 = svld1sh_s32(pg, s + 4 * srcStride + col);
+            svint32_t w12 = svld1sh_s32(pg, s + 5 * srcStride + col);
+            svint32_t w13 = svld1sh_s32(pg, s + 6 * srcStride + col);
+            svint32_t w14 = svld1sh_s32(pg, s + 7 * srcStride + col);
+            s += 8 * srcStride;
+
+            svint32_t acc0 = COMPUTE(coeffIdx, pg, w0, w1, w2, w3, w4, w5, w6, w7,   offset);
+            svint32_t acc1 = COMPUTE(coeffIdx, pg, w1, w2, w3, w4, w5, w6, w7, w8,   offset);
+            svint32_t acc2 = COMPUTE(coeffIdx, pg, w2, w3, w4, w5, w6, w7, w8, w9,   offset);
+            svint32_t acc3 = COMPUTE(coeffIdx, pg, w3, w4, w5, w6, w7, w8, w9, w10,  offset);
+            svint32_t acc4 = COMPUTE(coeffIdx, pg, w4, w5, w6, w7, w8, w9, w10,w11,  offset);
+            svint32_t acc5 = COMPUTE(coeffIdx, pg, w5, w6, w7, w8, w9, w10,w11,w12,  offset);
+            svint32_t acc6 = COMPUTE(coeffIdx, pg, w6, w7, w8, w9, w10,w11,w12,w13,  offset);
+            svint32_t acc7 = COMPUTE(coeffIdx, pg, w7, w8, w9, w10,w11,w12,w13,w14,  offset);
+
+            store_row(pg, d, dstStride, acc0, shift);
+            store_row(pg, d, dstStride, acc1, shift);
+            store_row(pg, d, dstStride, acc2, shift);
+            store_row(pg, d, dstStride, acc3, shift);
+            store_row(pg, d, dstStride, acc4, shift);
+            store_row(pg, d, dstStride, acc5, shift);
+            store_row(pg, d, dstStride, acc6, shift);
+            store_row(pg, d, dstStride, acc7, shift);
+
+            /* Rotate window by 8. */
+            w0 = w8;  w1 = w9;  w2 = w10; w3 = w11;
+            w4 = w12; w5 = w13; w6 = w14;
+        }
+
+        /*
+         * 4-row tail (handles heights not divisible by 8, e.g. 4 and 12).
+         * For heights that are multiples of 8 this loop body never executes.
+         */
+        for (; row < height; row += 4)
+        {
             svint32_t w7  = svld1sh_s32(pg, s + col);
             svint32_t w8  = svld1sh_s32(pg, s + 1 * srcStride + col);
             svint32_t w9  = svld1sh_s32(pg, s + 2 * srcStride + col);
             svint32_t w10 = svld1sh_s32(pg, s + 3 * srcStride + col);
             s += 4 * srcStride;
 
-            /* Compute and store 4 output rows. */
-            svint32_t acc0, acc1, acc2, acc3;
-            if (coeffIdx == 1)
-            {
-                acc0 = compute_coeff1(pg, w0, w1, w2, w3, w4, w5, w6, w7, offset);
-                acc1 = compute_coeff1(pg, w1, w2, w3, w4, w5, w6, w7, w8, offset);
-                acc2 = compute_coeff1(pg, w2, w3, w4, w5, w6, w7, w8, w9, offset);
-                acc3 = compute_coeff1(pg, w3, w4, w5, w6, w7, w8, w9, w10, offset);
-            }
-            else if (coeffIdx == 2)
-            {
-                acc0 = compute_coeff2(pg, w0, w1, w2, w3, w4, w5, w6, w7, offset);
-                acc1 = compute_coeff2(pg, w1, w2, w3, w4, w5, w6, w7, w8, offset);
-                acc2 = compute_coeff2(pg, w2, w3, w4, w5, w6, w7, w8, w9, offset);
-                acc3 = compute_coeff2(pg, w3, w4, w5, w6, w7, w8, w9, w10, offset);
-            }
-            else /* coeffIdx == 3 */
-            {
-                acc0 = compute_coeff3(pg, w0, w1, w2, w3, w4, w5, w6, w7, offset);
-                acc1 = compute_coeff3(pg, w1, w2, w3, w4, w5, w6, w7, w8, offset);
-                acc2 = compute_coeff3(pg, w2, w3, w4, w5, w6, w7, w8, w9, offset);
-                acc3 = compute_coeff3(pg, w3, w4, w5, w6, w7, w8, w9, w10, offset);
-            }
+            svint32_t acc0 = COMPUTE(coeffIdx, pg, w0, w1, w2, w3, w4, w5, w6, w7,  offset);
+            svint32_t acc1 = COMPUTE(coeffIdx, pg, w1, w2, w3, w4, w5, w6, w7, w8,  offset);
+            svint32_t acc2 = COMPUTE(coeffIdx, pg, w2, w3, w4, w5, w6, w7, w8, w9,  offset);
+            svint32_t acc3 = COMPUTE(coeffIdx, pg, w3, w4, w5, w6, w7, w8, w9, w10, offset);
 
-            svst1b_s32(pg, reinterpret_cast<int8_t *>(d + col),
-                       saturate_sve(pg, acc0, shift));
-            d += dstStride;
-            svst1b_s32(pg, reinterpret_cast<int8_t *>(d + col),
-                       saturate_sve(pg, acc1, shift));
-            d += dstStride;
-            svst1b_s32(pg, reinterpret_cast<int8_t *>(d + col),
-                       saturate_sve(pg, acc2, shift));
-            d += dstStride;
-            svst1b_s32(pg, reinterpret_cast<int8_t *>(d + col),
-                       saturate_sve(pg, acc3, shift));
-            d += dstStride;
+            store_row(pg, d, dstStride, acc0, shift);
+            store_row(pg, d, dstStride, acc1, shift);
+            store_row(pg, d, dstStride, acc2, shift);
+            store_row(pg, d, dstStride, acc3, shift);
 
-            /* Slide the window: rotate w0..w6 = w4..w10. */
             w0 = w4; w1 = w5; w2 = w6; w3 = w7;
             w4 = w8; w5 = w9; w6 = w10;
         }
     }
 }
+
+#undef COMPUTE
 
 /* Dispatcher: maps run-time coeffIdx -> compile-time template parameter. */
 template<int width, int height>
@@ -269,10 +285,7 @@ static void interp_vert_sp_sve(const int16_t *src, intptr_t srcStride,
 }
 
 /*
- * Combined horizontal+vertical luma HV filter (luma_hvpp).
- *
- * Horizontal pass: i8mm matrix-multiply accumulate (best available).
- * Vertical   pass: SVE scalable vertical filter (this file).
+ * Combined HV luma filter: i8mm/dotprod horizontal + SVE vertical.
  */
 #if defined(HAVE_NEON_I8MM) || defined(HAVE_NEON_DOTPROD)
 template<int width, int height>
@@ -305,11 +318,9 @@ void setupFilterPrimitives_sve(EncoderPrimitives &p)
     p.pu[LUMA_ ## W ## x ## H].luma_vsp  = interp_vert_sp_sve<W, H>; \
     p.pu[LUMA_ ## W ## x ## H].luma_hvpp = interp_hv_pp_sve<W, H>
 
-    /* Large square blocks. */
     LUMA_SVE(32, 32);
     LUMA_SVE(64, 64);
 
-    /* Rectangular variants involving a 32- or 64-wide dimension. */
     LUMA_SVE(32,  8);
     LUMA_SVE(32, 16);
     LUMA_SVE(32, 24);
@@ -318,7 +329,6 @@ void setupFilterPrimitives_sve(EncoderPrimitives &p)
     LUMA_SVE(64, 32);
     LUMA_SVE(64, 48);
 
-    /* Smaller blocks that also benefit from the SVE vertical filter. */
     LUMA_SVE(16,  4);
     LUMA_SVE(16,  8);
     LUMA_SVE(16, 12);
