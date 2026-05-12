@@ -40,13 +40,15 @@ void inline filter8_s16x4(const int16x4_t *s, const int32x4_t c, int32x4_t &d)
     if (coeffIdx == 1)
     {
         // { -1, 4, -10, 58, 17, -5, 1, 0 }
-        d = vsubl_s16(s[6], s[0]);
-        d = vaddq_s32(d, c);
-        d = vmlal_n_s16(d, s[1], 4);
-        d = vmlsl_n_s16(d, s[2], 10);
-        d = vmlal_n_s16(d, s[3], 58);
-        d = vmlal_n_s16(d, s[4], 17);
-        d = vmlsl_n_s16(d, s[5], 5);
+        // Split into two independent 3-deep chains to halve critical-path depth.
+        int32x4_t a = vsubl_s16(s[6], s[0]);
+        a = vaddq_s32(a, c);
+        a = vmlal_n_s16(a, s[1], 4);
+        a = vmlsl_n_s16(a, s[2], 10);
+        int32x4_t b = vmull_n_s16(s[3], 58);
+        b = vmlal_n_s16(b, s[4], 17);
+        b = vmlsl_n_s16(b, s[5], 5);
+        d = vaddq_s32(a, b);
     }
     else if (coeffIdx == 2)
     {
@@ -64,38 +66,42 @@ void inline filter8_s16x4(const int16x4_t *s, const int32x4_t c, int32x4_t &d)
     else
     {
         // { 0, 1, -5, 17, 58, -10, 4, -1 }
-        d = vsubl_s16(s[1], s[7]);
-        d = vaddq_s32(d, c);
-        d = vmlal_n_s16(d, s[6], 4);
-        d = vmlsl_n_s16(d, s[5], 10);
-        d = vmlal_n_s16(d, s[4], 58);
-        d = vmlal_n_s16(d, s[3], 17);
-        d = vmlsl_n_s16(d, s[2], 5);
+        int32x4_t a = vsubl_s16(s[1], s[7]);
+        a = vaddq_s32(a, c);
+        a = vmlal_n_s16(a, s[6], 4);
+        a = vmlsl_n_s16(a, s[5], 10);
+        int32x4_t b = vmull_n_s16(s[4], 58);
+        b = vmlal_n_s16(b, s[3], 17);
+        b = vmlsl_n_s16(b, s[2], 5);
+        d = vaddq_s32(a, b);
     }
 }
 
 template<int coeffIdx>
-void inline filter8_s16x8(const int16x8_t *s, const int32x4_t c, int32x4_t &d0,
-                          int32x4_t &d1)
+void inline filter8_s16x8(const int16x8_t *s, const int32x4_t c,
+                           int32x4_t &d0, int32x4_t &d1)
 {
     if (coeffIdx == 1)
     {
         // { -1, 4, -10, 58, 17, -5, 1, 0 }
-        d0 = vsubl_s16(vget_low_s16(s[6]), vget_low_s16(s[0]));
-        d0 = vaddq_s32(d0, c);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[1]), 4);
-        d0 = vmlsl_n_s16(d0, vget_low_s16(s[2]), 10);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[3]), 58);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[4]), 17);
-        d0 = vmlsl_n_s16(d0, vget_low_s16(s[5]), 5);
+        // Two independent 3-deep chains halve the MLA critical-path depth.
+        int32x4_t a0 = vsubl_s16(vget_low_s16(s[6]), vget_low_s16(s[0]));
+        a0 = vaddq_s32(a0, c);
+        a0 = vmlal_n_s16(a0, vget_low_s16(s[1]), 4);
+        a0 = vmlsl_n_s16(a0, vget_low_s16(s[2]), 10);
+        int32x4_t b0 = vmull_n_s16(vget_low_s16(s[3]), 58);
+        b0 = vmlal_n_s16(b0, vget_low_s16(s[4]), 17);
+        b0 = vmlsl_n_s16(b0, vget_low_s16(s[5]), 5);
+        d0 = vaddq_s32(a0, b0);
 
-        d1 = vsubl_s16(vget_high_s16(s[6]), vget_high_s16(s[0]));
-        d1 = vaddq_s32(d1, c);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[1]), 4);
-        d1 = vmlsl_n_s16(d1, vget_high_s16(s[2]), 10);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[3]), 58);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[4]), 17);
-        d1 = vmlsl_n_s16(d1, vget_high_s16(s[5]), 5);
+        int32x4_t a1 = vsubl_s16(vget_high_s16(s[6]), vget_high_s16(s[0]));
+        a1 = vaddq_s32(a1, c);
+        a1 = vmlal_n_s16(a1, vget_high_s16(s[1]), 4);
+        a1 = vmlsl_n_s16(a1, vget_high_s16(s[2]), 10);
+        int32x4_t b1 = vmull_n_s16(vget_high_s16(s[3]), 58);
+        b1 = vmlal_n_s16(b1, vget_high_s16(s[4]), 17);
+        b1 = vmlsl_n_s16(b1, vget_high_s16(s[5]), 5);
+        d1 = vaddq_s32(a1, b1);
     }
     else if (coeffIdx == 2)
     {
@@ -122,22 +128,24 @@ void inline filter8_s16x8(const int16x8_t *s, const int32x4_t c, int32x4_t &d0,
     }
     else
     {
-        // { 0, 1, -5, 17, 58, -10, 4, -1 }
-        d0 = vsubl_s16(vget_low_s16(s[1]), vget_low_s16(s[7]));
-        d0 = vaddq_s32(d0, c);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[6]), 4);
-        d0 = vmlsl_n_s16(d0, vget_low_s16(s[5]), 10);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[4]), 58);
-        d0 = vmlal_n_s16(d0, vget_low_s16(s[3]), 17);
-        d0 = vmlsl_n_s16(d0, vget_low_s16(s[2]), 5);
+        // { 0, 1, -5, 17, 58, -10, 4, -1 } mirror of coeff1
+        int32x4_t a0 = vsubl_s16(vget_low_s16(s[1]), vget_low_s16(s[7]));
+        a0 = vaddq_s32(a0, c);
+        a0 = vmlal_n_s16(a0, vget_low_s16(s[6]), 4);
+        a0 = vmlsl_n_s16(a0, vget_low_s16(s[5]), 10);
+        int32x4_t b0 = vmull_n_s16(vget_low_s16(s[4]), 58);
+        b0 = vmlal_n_s16(b0, vget_low_s16(s[3]), 17);
+        b0 = vmlsl_n_s16(b0, vget_low_s16(s[2]), 5);
+        d0 = vaddq_s32(a0, b0);
 
-        d1 = vsubl_s16(vget_high_s16(s[1]), vget_high_s16(s[7]));
-        d1 = vaddq_s32(d1, c);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[6]), 4);
-        d1 = vmlsl_n_s16(d1, vget_high_s16(s[5]), 10);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[4]), 58);
-        d1 = vmlal_n_s16(d1, vget_high_s16(s[3]), 17);
-        d1 = vmlsl_n_s16(d1, vget_high_s16(s[2]), 5);
+        int32x4_t a1 = vsubl_s16(vget_high_s16(s[1]), vget_high_s16(s[7]));
+        a1 = vaddq_s32(a1, c);
+        a1 = vmlal_n_s16(a1, vget_high_s16(s[6]), 4);
+        a1 = vmlsl_n_s16(a1, vget_high_s16(s[5]), 10);
+        int32x4_t b1 = vmull_n_s16(vget_high_s16(s[4]), 58);
+        b1 = vmlal_n_s16(b1, vget_high_s16(s[3]), 17);
+        b1 = vmlsl_n_s16(b1, vget_high_s16(s[2]), 5);
+        d1 = vaddq_s32(a1, b1);
     }
 }
 
@@ -1910,38 +1918,23 @@ void interp8_vert_sp_neon(const int16_t *src, intptr_t srcStride, pixel *dst,
             {
                 load_s16x8xn<4>(s, srcStride, in + 7);
 
-                int32x4_t sum_lo[4];
-                int32x4_t sum_hi[4];
+                int32x4_t sum_lo[4], sum_hi[4];
                 filter8_s16x8<coeffIdx>(in + 0, c, sum_lo[0], sum_hi[0]);
                 filter8_s16x8<coeffIdx>(in + 1, c, sum_lo[1], sum_hi[1]);
                 filter8_s16x8<coeffIdx>(in + 2, c, sum_lo[2], sum_hi[2]);
                 filter8_s16x8<coeffIdx>(in + 3, c, sum_lo[3], sum_hi[3]);
 
-                int16x8_t sum[4];
-                sum[0] = vcombine_s16(vshrn_n_s32(sum_lo[0], shift),
-                                      vshrn_n_s32(sum_hi[0], shift));
-                sum[1] = vcombine_s16(vshrn_n_s32(sum_lo[1], shift),
-                                      vshrn_n_s32(sum_hi[1], shift));
-                sum[2] = vcombine_s16(vshrn_n_s32(sum_lo[2], shift),
-                                      vshrn_n_s32(sum_hi[2], shift));
-                sum[3] = vcombine_s16(vshrn_n_s32(sum_lo[3], shift),
-                                      vshrn_n_s32(sum_hi[3], shift));
-
                 uint8x8_t sum_u8[4];
-                sum_u8[0] = vqmovun_s16(sum[0]);
-                sum_u8[1] = vqmovun_s16(sum[1]);
-                sum_u8[2] = vqmovun_s16(sum[2]);
-                sum_u8[3] = vqmovun_s16(sum[3]);
-
+                for (int i = 0; i < 4; i++)
+                {
+                    int16x8_t t = vcombine_s16(vshrn_n_s32(sum_lo[i], shift),
+                                               vshrn_n_s32(sum_hi[i], shift));
+                    sum_u8[i] = vqmovun_s16(t);
+                }
                 store_u8x8xn<4>(d, dstStride, sum_u8);
 
-                in[0] = in[4];
-                in[1] = in[5];
-                in[2] = in[6];
-                in[3] = in[7];
-                in[4] = in[8];
-                in[5] = in[9];
-                in[6] = in[10];
+                in[0] = in[4]; in[1] = in[5]; in[2] = in[6]; in[3] = in[7];
+                in[4] = in[8]; in[5] = in[9]; in[6] = in[10];
 
                 s += 4 * srcStride;
                 d += 4 * dstStride;
@@ -1951,6 +1944,7 @@ void interp8_vert_sp_neon(const int16_t *src, intptr_t srcStride, pixel *dst,
             d = dst + 8;
         }
 
+        /* Remaining 4 columns (width==4 standalone, or width==12 cols 8..11). */
         int16x4_t in[11];
         load_s16x4xn<7>(s, srcStride, in);
         s += 7 * srcStride;
@@ -1979,13 +1973,8 @@ void interp8_vert_sp_neon(const int16_t *src, intptr_t srcStride, pixel *dst,
 
             store_u8x4xn<4>(d, dstStride, sum_u8);
 
-            in[0] = in[4];
-            in[1] = in[5];
-            in[2] = in[6];
-            in[3] = in[7];
-            in[4] = in[8];
-            in[5] = in[9];
-            in[6] = in[10];
+            in[0] = in[4]; in[1] = in[5]; in[2] = in[6]; in[3] = in[7];
+            in[4] = in[8]; in[5] = in[9]; in[6] = in[10];
 
             s += 4 * srcStride;
             d += 4 * dstStride;
@@ -2006,38 +1995,23 @@ void interp8_vert_sp_neon(const int16_t *src, intptr_t srcStride, pixel *dst,
             {
                 load_s16x8xn<4>(s, srcStride, in + 7);
 
-                int32x4_t sum_lo[4];
-                int32x4_t sum_hi[4];
+                int32x4_t sum_lo[4], sum_hi[4];
                 filter8_s16x8<coeffIdx>(in + 0, c, sum_lo[0], sum_hi[0]);
                 filter8_s16x8<coeffIdx>(in + 1, c, sum_lo[1], sum_hi[1]);
                 filter8_s16x8<coeffIdx>(in + 2, c, sum_lo[2], sum_hi[2]);
                 filter8_s16x8<coeffIdx>(in + 3, c, sum_lo[3], sum_hi[3]);
 
-                int16x8_t sum[4];
-                sum[0] = vcombine_s16(vshrn_n_s32(sum_lo[0], shift),
-                                      vshrn_n_s32(sum_hi[0], shift));
-                sum[1] = vcombine_s16(vshrn_n_s32(sum_lo[1], shift),
-                                      vshrn_n_s32(sum_hi[1], shift));
-                sum[2] = vcombine_s16(vshrn_n_s32(sum_lo[2], shift),
-                                      vshrn_n_s32(sum_hi[2], shift));
-                sum[3] = vcombine_s16(vshrn_n_s32(sum_lo[3], shift),
-                                      vshrn_n_s32(sum_hi[3], shift));
-
                 uint8x8_t sum_u8[4];
-                sum_u8[0] = vqmovun_s16(sum[0]);
-                sum_u8[1] = vqmovun_s16(sum[1]);
-                sum_u8[2] = vqmovun_s16(sum[2]);
-                sum_u8[3] = vqmovun_s16(sum[3]);
-
+                for (int i = 0; i < 4; i++)
+                {
+                    int16x8_t t = vcombine_s16(vshrn_n_s32(sum_lo[i], shift),
+                                               vshrn_n_s32(sum_hi[i], shift));
+                    sum_u8[i] = vqmovun_s16(t);
+                }
                 store_u8x8xn<4>(d, dstStride, sum_u8);
 
-                in[0] = in[4];
-                in[1] = in[5];
-                in[2] = in[6];
-                in[3] = in[7];
-                in[4] = in[8];
-                in[5] = in[9];
-                in[6] = in[10];
+                in[0] = in[4]; in[1] = in[5]; in[2] = in[6]; in[3] = in[7];
+                in[4] = in[8]; in[5] = in[9]; in[6] = in[10];
 
                 s += 4 * srcStride;
                 d += 4 * dstStride;
