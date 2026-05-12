@@ -40,42 +40,37 @@ void inline filter8_s16x4(const int16x4_t *s, const int32x4_t c, int32x4_t &d)
     if (coeffIdx == 1)
     {
         // { -1, 4, -10, 58, 17, -5, 1, 0 }
-        // Chain A: offset + (s6-s0) + 4*s1 - 10*s2  (3 ops, critical path ~11 cycles)
-        // Chain B: 58*s3 + 17*s4 - 5*s5              (3 ops, independent, ~12 cycles)
-        int32x4_t a = vaddq_s32(vsubl_s16(s[6], s[0]), c);
-        a = vmlal_n_s16(a, s[1],  4);
-        a = vmlsl_n_s16(a, s[2], 10);
-        int32x4_t b = vmull_n_s16(s[3], 58);
-        b = vmlal_n_s16(b, s[4], 17);
-        b = vmlsl_n_s16(b, s[5],  5);
-        d = vaddq_s32(a, b);
+        d = vsubl_s16(s[6], s[0]);
+        d = vaddq_s32(d, c);
+        d = vmlal_n_s16(d, s[1], 4);
+        d = vmlsl_n_s16(d, s[2], 10);
+        d = vmlal_n_s16(d, s[3], 58);
+        d = vmlal_n_s16(d, s[4], 17);
+        d = vmlsl_n_s16(d, s[5], 5);
     }
     else if (coeffIdx == 2)
     {
-        // { -1, 4, -11, 40, 40, -11, 4, -1 } (symmetric)
+        // { -1, 4, -11, 40, 40, -11, 4, -1 }
         int32x4_t t0 = vaddl_s16(s[3], s[4]);
         int32x4_t t1 = vaddl_s16(s[2], s[5]);
         int32x4_t t2 = vaddl_s16(s[1], s[6]);
         int32x4_t t3 = vaddl_s16(s[0], s[7]);
-        // Chain A: c + 40*t0 - 11*t1  Chain B: 4*t2 - t3 (independent)
-        int32x4_t a = vmlaq_n_s32(c, t0, 40);
-        a = vmlaq_n_s32(a, t1, -11);
-        int32x4_t b = vshlq_n_s32(t2, 2);
-        b = vsubq_s32(b, t3);
-        d = vaddq_s32(a, b);
+
+        d = vmlaq_n_s32(c, t0, 40);
+        d = vmlaq_n_s32(d, t1, -11);
+        d = vmlaq_n_s32(d, t2, 4);
+        d = vmlaq_n_s32(d, t3, -1);
     }
     else
     {
-        // { 0, 1, -5, 17, 58, -10, 4, -1 } (mirror of coeff1)
-        // Chain A: offset + (s1-s7) + 4*s6 - 10*s5
-        // Chain B: 58*s4 + 17*s3 - 5*s2              (independent)
-        int32x4_t a = vaddq_s32(vsubl_s16(s[1], s[7]), c);
-        a = vmlal_n_s16(a, s[6],  4);
-        a = vmlsl_n_s16(a, s[5], 10);
-        int32x4_t b = vmull_n_s16(s[4], 58);
-        b = vmlal_n_s16(b, s[3], 17);
-        b = vmlsl_n_s16(b, s[2],  5);
-        d = vaddq_s32(a, b);
+        // { 0, 1, -5, 17, 58, -10, 4, -1 }
+        d = vsubl_s16(s[1], s[7]);
+        d = vaddq_s32(d, c);
+        d = vmlal_n_s16(d, s[6], 4);
+        d = vmlsl_n_s16(d, s[5], 10);
+        d = vmlal_n_s16(d, s[4], 58);
+        d = vmlal_n_s16(d, s[3], 17);
+        d = vmlsl_n_s16(d, s[2], 5);
     }
 }
 
@@ -86,69 +81,63 @@ void inline filter8_s16x8(const int16x8_t *s, const int32x4_t c,
     if (coeffIdx == 1)
     {
         // { -1, 4, -10, 58, 17, -5, 1, 0 }
-        // Chain A: offset + (s6-s0) + 4*s1 - 10*s2  (3 ops, ~11 cycles critical path)
-        // Chain B: 58*s3 + 17*s4 - 5*s5              (3 ops, independent, ~12 cycles)
-        int32x4_t a0 = vaddq_s32(vsubl_s16(vget_low_s16(s[6]),  vget_low_s16(s[0])),  c);
-        a0 = vmlal_n_s16(a0, vget_low_s16(s[1]),   4);
-        a0 = vmlsl_n_s16(a0, vget_low_s16(s[2]),  10);
-        int32x4_t b0 = vmull_n_s16(vget_low_s16(s[3]), 58);
-        b0 = vmlal_n_s16(b0, vget_low_s16(s[4]),  17);
-        b0 = vmlsl_n_s16(b0, vget_low_s16(s[5]),   5);
-        d0 = vaddq_s32(a0, b0);
+        d0 = vsubl_s16(vget_low_s16(s[6]), vget_low_s16(s[0]));
+        d0 = vaddq_s32(d0, c);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[1]), 4);
+        d0 = vmlsl_n_s16(d0, vget_low_s16(s[2]), 10);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[3]), 58);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[4]), 17);
+        d0 = vmlsl_n_s16(d0, vget_low_s16(s[5]), 5);
 
-        int32x4_t a1 = vaddq_s32(vsubl_s16(vget_high_s16(s[6]), vget_high_s16(s[0])), c);
-        a1 = vmlal_n_s16(a1, vget_high_s16(s[1]),  4);
-        a1 = vmlsl_n_s16(a1, vget_high_s16(s[2]), 10);
-        int32x4_t b1 = vmull_n_s16(vget_high_s16(s[3]), 58);
-        b1 = vmlal_n_s16(b1, vget_high_s16(s[4]), 17);
-        b1 = vmlsl_n_s16(b1, vget_high_s16(s[5]),  5);
-        d1 = vaddq_s32(a1, b1);
+        d1 = vsubl_s16(vget_high_s16(s[6]), vget_high_s16(s[0]));
+        d1 = vaddq_s32(d1, c);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[1]), 4);
+        d1 = vmlsl_n_s16(d1, vget_high_s16(s[2]), 10);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[3]), 58);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[4]), 17);
+        d1 = vmlsl_n_s16(d1, vget_high_s16(s[5]), 5);
     }
     else if (coeffIdx == 2)
     {
-        // { -1, 4, -11, 40, 40, -11, 4, -1 } (symmetric)
-        // Paired sums (all independent), then two parallel accumulator chains.
+        // { -1, 4, -11, 40, 40, -11, 4, -1 }
         int32x4_t t0 = vaddl_s16(vget_low_s16(s[3]), vget_low_s16(s[4]));
         int32x4_t t1 = vaddl_s16(vget_low_s16(s[2]), vget_low_s16(s[5]));
         int32x4_t t2 = vaddl_s16(vget_low_s16(s[1]), vget_low_s16(s[6]));
         int32x4_t t3 = vaddl_s16(vget_low_s16(s[0]), vget_low_s16(s[7]));
-        // Chain A: c + 40*t0 - 11*t1   Chain B: 4*t2 - t3 (independent)
-        int32x4_t a0 = vmlaq_n_s32(c, t0, 40);
-        a0 = vmlaq_n_s32(a0, t1, -11);
-        int32x4_t b0 = vshlq_n_s32(t2, 2);
-        b0 = vsubq_s32(b0, t3);
-        d0 = vaddq_s32(a0, b0);
+
+        d0 = vmlaq_n_s32(c, t0, 40);
+        d0 = vmlaq_n_s32(d0, t1, -11);
+        d0 = vmlaq_n_s32(d0, t2, 4);
+        d0 = vmlaq_n_s32(d0, t3, -1);
 
         int32x4_t t4 = vaddl_s16(vget_high_s16(s[3]), vget_high_s16(s[4]));
         int32x4_t t5 = vaddl_s16(vget_high_s16(s[2]), vget_high_s16(s[5]));
         int32x4_t t6 = vaddl_s16(vget_high_s16(s[1]), vget_high_s16(s[6]));
         int32x4_t t7 = vaddl_s16(vget_high_s16(s[0]), vget_high_s16(s[7]));
-        int32x4_t a1 = vmlaq_n_s32(c, t4, 40);
-        a1 = vmlaq_n_s32(a1, t5, -11);
-        int32x4_t b1 = vshlq_n_s32(t6, 2);
-        b1 = vsubq_s32(b1, t7);
-        d1 = vaddq_s32(a1, b1);
+
+        d1 = vmlaq_n_s32(c, t4, 40);
+        d1 = vmlaq_n_s32(d1, t5, -11);
+        d1 = vmlaq_n_s32(d1, t6, 4);
+        d1 = vmlaq_n_s32(d1, t7, -1);
     }
     else
     {
-        // { 0, 1, -5, 17, 58, -10, 4, -1 } (mirror of coeff1)
-        // Chain A: offset + (s1-s7) + 4*s6 - 10*s5
-        // Chain B: 58*s4 + 17*s3 - 5*s2              (independent)
-        int32x4_t a0 = vaddq_s32(vsubl_s16(vget_low_s16(s[1]),  vget_low_s16(s[7])),  c);
-        a0 = vmlal_n_s16(a0, vget_low_s16(s[6]),   4);
-        a0 = vmlsl_n_s16(a0, vget_low_s16(s[5]),  10);
-        int32x4_t b0 = vmull_n_s16(vget_low_s16(s[4]), 58);
-        b0 = vmlal_n_s16(b0, vget_low_s16(s[3]),  17);
-        b0 = vmlsl_n_s16(b0, vget_low_s16(s[2]),   5);
-        d0 = vaddq_s32(a0, b0);
+        // { 0, 1, -5, 17, 58, -10, 4, -1 }
+        d0 = vsubl_s16(vget_low_s16(s[1]), vget_low_s16(s[7]));
+        d0 = vaddq_s32(d0, c);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[6]), 4);
+        d0 = vmlsl_n_s16(d0, vget_low_s16(s[5]), 10);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[4]), 58);
+        d0 = vmlal_n_s16(d0, vget_low_s16(s[3]), 17);
+        d0 = vmlsl_n_s16(d0, vget_low_s16(s[2]), 5);
 
-        int32x4_t a1 = vaddq_s32(vsubl_s16(vget_high_s16(s[1]), vget_high_s16(s[7])), c);
-        a1 = vmlal_n_s16(a1, vget_high_s16(s[6]),  4);
-        a1 = vmlsl_n_s16(a1, vget_high_s16(s[5]), 10);
-        int32x4_t b1 = vmull_n_s16(vget_high_s16(s[4]), 58);
-        b1 = vmlal_n_s16(b1, vget_high_s16(s[3]), 17);
-        b1 = vmlsl_n_s16(b1, vget_high_s16(s[2]),  5);
-        d1 = vaddq_s32(a1, b1);
+        d1 = vsubl_s16(vget_high_s16(s[1]), vget_high_s16(s[7]));
+        d1 = vaddq_s32(d1, c);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[6]), 4);
+        d1 = vmlsl_n_s16(d1, vget_high_s16(s[5]), 10);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[4]), 58);
+        d1 = vmlal_n_s16(d1, vget_high_s16(s[3]), 17);
+        d1 = vmlsl_n_s16(d1, vget_high_s16(s[2]), 5);
     }
 }
 
