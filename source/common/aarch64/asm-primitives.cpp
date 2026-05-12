@@ -1059,7 +1059,12 @@ void setupIntrinsicPrimitives(EncoderPrimitives &p, int cpuMask)
     {
         setupSaoPrimitives_sve(p);
         setupDCTPrimitives_sve(p);
-        setupFilterPrimitives_sve(p);
+        /* Only register SVE luma filter when VL > 128-bit.
+         * At VL=128 the SVE vertical pass is slower than NEON due to:
+         * half the column step (svcntw()=4 vs NEON's 8), svdup overhead
+         * for scalar constants, and per-instruction predicate cost. */
+        if (svcntw() > 4)
+            setupFilterPrimitives_sve(p);
     }
 #endif
 #if defined(HAVE_SVE2) && HAVE_SVE_BRIDGE
